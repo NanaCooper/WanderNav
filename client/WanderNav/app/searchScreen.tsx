@@ -21,14 +21,47 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { THEME, addAlpha } from '../constants/theme'; // Ensure this path is correct
 import { useFocusEffect } from 'expo-router';
 import * as Location from 'expo-location';
+import { searchApiService } from '../src/services/api';
 
 // ... (Keep your AnimatedPressable and FadeInView components as they are) ...
 const AnimatedPressable = ({ onPress, style, children, pressableStyle, scaleTo = 0.97, feedbackType = 'scale', androidRippleColor = addAlpha(THEME.TEXT_PRIMARY, 0.05), }: { onPress?: () => void; style?: any; children: React.ReactNode; pressableStyle?: any; scaleTo?: number; feedbackType?: 'scale' | 'opacity'; androidRippleColor?: string; }) => {
   const animatedValue = React.useRef(new Animated.Value(1)).current;
-  const handlePressIn = () => Animated.spring(animatedValue, { toValue: scaleTo, useNativeDriver: true, friction: 7 }).start();
-  const handlePressOut = () => Animated.spring(animatedValue, { toValue: 1, useNativeDriver: true, friction: 4 }).start();
+  const [isPressed, setIsPressed] = React.useState(false);
+  
+  const handlePressIn = () => {
+    if (!isPressed) {
+      setIsPressed(true);
+      Animated.spring(animatedValue, { toValue: scaleTo, useNativeDriver: true, friction: 7 }).start();
+    }
+  };
+  
+  const handlePressOut = () => {
+    setIsPressed(false);
+    Animated.spring(animatedValue, { toValue: 1, useNativeDriver: true, friction: 4 }).start();
+  };
+  
+  const handlePress = () => {
+    if (onPress && !isPressed) {
+      onPress();
+    }
+  };
+  
   const animatedStyle = feedbackType === 'opacity' ? { opacity: animatedValue } : { transform: [{ scale: animatedValue }] };
-  return (<Pressable onPressIn={onPress ? handlePressIn : undefined} onPressOut={onPress ? handlePressOut : undefined} onPress={onPress} style={pressableStyle} android_ripple={{ color: androidRippleColor }}><Animated.View style={[style, animatedStyle]}>{children}</Animated.View></Pressable>);
+  
+  return (
+    <Pressable 
+      onPressIn={handlePressIn} 
+      onPressOut={handlePressOut} 
+      onPress={handlePress} 
+      style={pressableStyle} 
+      android_ripple={{ color: androidRippleColor }}
+      disabled={isPressed}
+    >
+      <Animated.View style={[style, animatedStyle]}>
+        {children}
+      </Animated.View>
+    </Pressable>
+  );
 };
 
 interface FadeInViewProps { children: React.ReactNode; duration?: number; delay?: number; style?: any; translateYValue?: number; }
@@ -70,6 +103,7 @@ const SearchScreen = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [showNoResults, setShowNoResults] = useState(false);
   const [hasSearchedOnce, setHasSearchedOnce] = useState(false);
+  const [isSearching, setIsSearching] = useState(false); // Add search lock
 
   const [selectedStartPoint, setSelectedStartPoint] = useState<LocationPoint | null>(null);
   const [selectedDestinationPoint, setSelectedDestinationPoint] = useState<LocationPoint | null>(null);
@@ -154,41 +188,100 @@ const SearchScreen = () => {
     }
   }, [activeTab, startLocationQuery]); // Removed selectedStartPoint as direct dep for initial fetch
 
-  // --- Perform Search (Unified Logic) ---
+  // --- Perform Search (Real API) ---
   const performSearch = useCallback(async (query: string, searchContext: ActiveSearchInputType) => {
+    // Prevent multiple simultaneous searches
+    if (isSearching) return;
+    
     if (!query.trim() || (searchContext === 'start' && query === CURRENT_LOCATION_TEXT && selectedStartPoint)) {
       setSearchResults([]);
       setShowNoResults(false);
-      setIsLoading(false); // Ensure loading is off
+      setIsLoading(false);
       return;
     }
 
+    setIsSearching(true);
     setIsLoading(true);
     setShowNoResults(false);
     if (!hasSearchedOnce) setHasSearchedOnce(true);
 
-    // console.log(`Searching: "${query}" (context: ${searchContext}, tab: ${activeTab})`);
-    await new Promise(resolve => setTimeout(resolve, 700)); // Simulate API delay
-    let results: SearchResultItem[] = [];
+    try {
+      console.log(`Searching: "${query}" (context: ${searchContext}, tab: ${activeTab})`);
+      
+      // Call the real backend API
+      const searchParams = {
+        query: query.trim(),
+        type: activeTab as 'places' | 'users' | 'hazards'
+      };
 
-    if (activeTab === 'places') {
-      if (query.toLowerCase().includes('park')) {
-        results = [ { type: 'place', id: 'p1', name: `${query} Central Park`, address: '123 Main St', lat: 34.0522, lng: -118.2437 }, { type: 'place', id: 'p2', name: `Community ${query}side`, address: '456 Oak Ave', lat: 34.0550, lng: -118.2500 }];
-      } else if (query.toLowerCase().includes('coffee')) {
-        results = [{ type: 'place', id: 'p3', name: `The ${query} Spot`, address: '789 Pine Ln', lat: 34.0500, lng: -118.2400 }];
-      } else if (query.length > 1) {
-         results = [{ type: 'place', id: 'p-generic-' + query, name: `Place for ${query}`, address: 'Some Address', lat: 34.0511, lng: -118.2411 }];
+      const results = await searchApiService.performSearch(searchParams);
+      
+      // Convert backend results to frontend format
+      const convertedResults: SearchResultItem[] = results.map((item, index) => {
+        if (activeTab === 'places') {
+          return {
+            type: 'place',
+            id: item.id,
+            name: item.name,
+            address: item.description || 'No address available',
+            lat: item.latitude,
+            lng: item.longitude
+          };
+        } else if (activeTab === 'users') {
+          return {
+            type: 'user',
+            id: item.id,
+            name: item.name,
+            username: item.username || item.name.toLowerCase().replace(/\s+/g, '_'),
+            avatar: `https://i.pravatar.cc/80?u=${item.id}`
+          };
+        } else { // hazards
+          return {
+            type: 'hazard',
+            id: item.id,
+            category: item.hazardType || 'Report',
+            description: item.description || `Hazard near ${item.name}`,
+            date: new Date().toISOString().split('T')[0],
+            icon: 'alert-outline'
+          };
+        }
+      });
+
+      console.log('Search results converted:', convertedResults);
+      setSearchResults(convertedResults);
+      setShowNoResults(convertedResults.length === 0 && query.trim().length > 0);
+      setIsLoading(false); // Stop loading when results are set
+      
+    } catch (error) {
+      console.error('Search API error:', error);
+      
+      // Fallback to mock data if API fails
+      let fallbackResults: SearchResultItem[] = [];
+      
+      if (activeTab === 'places') {
+        if (query.toLowerCase().includes('park')) {
+          fallbackResults = [
+            { type: 'place', id: 'p1', name: `${query} Central Park`, address: '123 Main St', lat: 34.0522, lng: -118.2437 },
+            { type: 'place', id: 'p2', name: `Community ${query}side`, address: '456 Oak Ave', lat: 34.0550, lng: -118.2500 }
+          ];
+        } else if (query.toLowerCase().includes('coffee')) {
+          fallbackResults = [{ type: 'place', id: 'p3', name: `The ${query} Spot`, address: '789 Pine Ln', lat: 34.0500, lng: -118.2400 }];
+        } else if (query.length > 1) {
+          fallbackResults = [{ type: 'place', id: 'p-generic-' + query, name: `Place for ${query}`, address: 'Some Address', lat: 34.0511, lng: -118.2411 }];
+        }
+      } else if (activeTab === 'users') {
+        fallbackResults = query.length > 1 ? [{ type: 'user', id: 'u-' + query, name: `${query} User`, username: `${query.toLowerCase()}_tag`, avatar: `https://i.pravatar.cc/80?u=${query}` }] : [];
+      } else if (activeTab === 'hazards') {
+        fallbackResults = query.length > 1 ? [{ type: 'hazard', id: 'h-' + query, category: 'Report', description: `Hazard near ${query}`, date: '2024-01-15', icon: 'alert-outline' }] : [];
       }
-    } else if (activeTab === 'users') {
-      results = query.length > 1 ? [{ type: 'user', id: 'u-' + query, name: `${query} User`, username: `${query.toLowerCase()}_tag`, avatar: `https://i.pravatar.cc/80?u=${query}` }] : [];
-    } else if (activeTab === 'hazards') {
-      results = query.length > 1 ? [{ type: 'hazard', id: 'h-' + query, category: 'Report', description: `Hazard near ${query}`, date: '2024-01-15', icon: 'alert-outline' }] : [];
+      
+      setSearchResults(fallbackResults);
+      setShowNoResults(fallbackResults.length === 0 && query.trim().length > 0);
+    } finally {
+      setIsLoading(false);
+      setIsSearching(false);
     }
-
-    setSearchResults(results);
-    setIsLoading(false);
-    setShowNoResults(results.length === 0 && query.trim().length > 0);
-  }, [activeTab, selectedStartPoint, hasSearchedOnce]);
+  }, [activeTab, selectedStartPoint, hasSearchedOnce, isSearching]);
 
   // --- Debounce Search ---
   useEffect(() => {
@@ -201,30 +294,40 @@ const SearchScreen = () => {
       currentQuery = activeSearchInput === 'start' ? startLocationQuery : destinationQuery;
     } else {
       currentQuery = generalSearchQuery;
-      currentSearchContext = 'general'; // Ensure context is general for these tabs
+      currentSearchContext = 'general';
     }
 
-    if (activeTab === 'places' && activeSearchInput === 'start' && currentQuery === CURRENT_LOCATION_TEXT && selectedStartPoint) {
-      if(searchResults.length > 0) setSearchResults([]);
-      if(showNoResults) setShowNoResults(false);
-      if(isLoading) setIsLoading(false);
-      return;
-    }
-
-    if (!currentQuery.trim()) {
+    // Don't search if query is empty or if it's current location and already selected
+    if (!currentQuery.trim() || (activeTab === 'places' && activeSearchInput === 'start' && currentQuery === CURRENT_LOCATION_TEXT && selectedStartPoint)) {
       setSearchResults([]);
       setShowNoResults(false);
-      // Don't set hasSearchedOnce to false here, only on tab change or explicit clear
-      if(isLoading) setIsLoading(false);
+      setIsLoading(false);
       return;
     }
 
+    // Only search if query has at least 2 characters
+    if (currentQuery.trim().length < 2) {
+      setSearchResults([]);
+      setShowNoResults(false);
+      setIsLoading(false);
+      return;
+    }
+
+    // Set loading state immediately
+    setIsLoading(true);
+    setShowNoResults(false);
+
+    // Debounce the search with a longer delay
     debounceTimeout.current = setTimeout(() => {
       performSearch(currentQuery, currentSearchContext);
-    }, 500);
+    }, 800); // Increased debounce delay
 
-    return () => { if (debounceTimeout.current) clearTimeout(debounceTimeout.current); };
-  }, [startLocationQuery, destinationQuery, generalSearchQuery, activeSearchInput, performSearch, activeTab, selectedStartPoint, isLoading, searchResults.length, showNoResults]);
+    return () => {
+      if (debounceTimeout.current) {
+        clearTimeout(debounceTimeout.current);
+      }
+    };
+  }, [activeTab, startLocationQuery, destinationQuery, generalSearchQuery, activeSearchInput, selectedStartPoint, performSearch]);
 
 
   const handleTabChange = (tabId: SearchTabId) => {
@@ -285,54 +388,94 @@ const SearchScreen = () => {
   };
 
   const onSearchResultPress = (item: SearchResultItem) => {
+    // Prevent multiple rapid presses
+    if (isLoading) return;
+    
     Keyboard.dismiss();
-    setIsLoading(false); // Stop loading if a search was in progress
-    if (item.type === 'place' && activeTab === 'places') {
+    
+    // Use setTimeout to ensure state updates are processed properly
+    setTimeout(() => {
+      if (item.type === 'place' && activeTab === 'places') {
         const placeItem = item as PlaceResult;
-         if (!placeItem.lat || !placeItem.lng) {
-            Alert.alert("Location Data Missing", "This place doesn't have coordinates.");
-            return;
+        if (!placeItem.lat || !placeItem.lng) {
+          Alert.alert("Location Data Missing", "This place doesn't have coordinates.");
+          return;
         }
-        const locationPoint: LocationPoint = { latitude: placeItem.lat, longitude: placeItem.lng, name: placeItem.name, address: placeItem.address };
+        
+        const locationPoint: LocationPoint = { 
+          latitude: placeItem.lat, 
+          longitude: placeItem.lng, 
+          name: placeItem.name, 
+          address: placeItem.address 
+        };
 
         if (activeSearchInput === 'start') {
-            setSelectedStartPoint(locationPoint);
-            setStartLocationQuery(placeItem.name); // Update query to reflect selected place
-            setActiveSearchInput('destination');
-            destinationInputRef.current?.focus();
+          setSelectedStartPoint(locationPoint);
+          setStartLocationQuery(placeItem.name);
+          setActiveSearchInput('destination');
+          console.log("Start point selected:", locationPoint);
         } else { // 'destination'
-            setSelectedDestinationPoint(locationPoint);
-            setDestinationQuery(placeItem.name); // Update query
-            // Potentially auto-trigger get directions if start is also set
-            if(selectedStartPoint) {
-                console.log("Both points selected, ready for directions.");
-            }
+          setSelectedDestinationPoint(locationPoint);
+          setDestinationQuery(placeItem.name);
+          console.log("Destination point selected:", locationPoint);
+          if(selectedStartPoint) {
+            console.log("Both points selected, ready for directions.");
+          }
         }
         setSearchResults([]); // Clear results after selection
-    } else if (item.type === 'user') {
-      router.push(`/userProfile/${item.id}`);
-    } else if (item.type === 'hazard') {
-      router.push(`/hazardDetails/${item.id}`);
-    }
+      } else if (item.type === 'user') {
+        router.push(`/userProfile/${item.id}`);
+      } else if (item.type === 'hazard') {
+        router.push(`/hazardDetails/${item.id}`);
+      }
+    }, 100); // Small delay to ensure smooth state transitions
   };
 
   const handleGetDirections = () => {
+    // Prevent multiple rapid presses
+    if (isLoading) return;
+    
     if (!selectedStartPoint) {
-      Alert.alert("Start Location Needed", "Please select a starting point.", [{ text: "OK", onPress: () => { setActiveSearchInput('start'); startInputRef.current?.focus(); }}]);
+      Alert.alert("Start Location Needed", "Please select a starting point.", [{ 
+        text: "OK", 
+        onPress: () => { 
+          setActiveSearchInput('start'); 
+          startInputRef.current?.focus(); 
+        }
+      }]);
       return;
     }
     if (!selectedDestinationPoint) {
-      Alert.alert("Destination Needed", "Please select a destination point.", [{ text: "OK", onPress: () => {setActiveSearchInput('destination'); destinationInputRef.current?.focus(); }}]);
+      Alert.alert("Destination Needed", "Please select a destination point.", [{ 
+        text: "OK", 
+        onPress: () => {
+          setActiveSearchInput('destination'); 
+          destinationInputRef.current?.focus(); 
+        }
+      }]);
       return;
     }
+    
     console.log("Routing from:", selectedStartPoint.name, "to:", selectedDestinationPoint.name);
-    router.push({
-        pathname: '/map', // <<<--- YOUR MAP SCREEN ROUTE
+    
+    // Set loading to prevent multiple presses
+    setIsLoading(true);
+    
+    // Use setTimeout to ensure smooth navigation
+    setTimeout(() => {
+      router.push({
+        pathname: '/map',
         params: {
-            startLat: selectedStartPoint.latitude, startLng: selectedStartPoint.longitude, startName: selectedStartPoint.name,
-            destLat: selectedDestinationPoint.latitude, destLng: selectedDestinationPoint.longitude, destName: selectedDestinationPoint.name,
+          startLat: selectedStartPoint.latitude, 
+          startLng: selectedStartPoint.longitude, 
+          startName: selectedStartPoint.name,
+          destLat: selectedDestinationPoint.latitude, 
+          destLng: selectedDestinationPoint.longitude, 
+          destName: selectedDestinationPoint.name,
         }
-    });
+      });
+      setIsLoading(false);
+    }, 150);
   };
 
   const renderResultItem = ({ item }: { item: SearchResultItem }) => {
@@ -518,7 +661,7 @@ const SearchScreen = () => {
       </View>
 
       {/* --- Get Directions Button --- */}
-      {activeTab === 'places' && selectedStartPoint && selectedDestinationPoint && !isLoading && searchResults.length === 0 && (
+      {activeTab === 'places' && selectedStartPoint && selectedDestinationPoint && !isLoading && (
         <View style={styles.getDirectionsButtonContainer}>
           <AnimatedPressable style={styles.getDirectionsButton} onPress={handleGetDirections} pressableStyle={{ width: '100%' }}>
             <MaterialCommunityIcons name="directions" size={24} color={THEME.TEXT_ON_ACCENT_COLOR} />
@@ -526,9 +669,16 @@ const SearchScreen = () => {
           </AnimatedPressable>
         </View>
       )}
+      
+      {/* Debug info */}
+      {__DEV__ && (
+        <View style={{ padding: 10, backgroundColor: '#f0f0f0' }}>
+          <Text>Debug: activeTab={activeTab}, start={!!selectedStartPoint}, dest={!!selectedDestinationPoint}, loading={isLoading}</Text>
+        </View>
+      )}
 
       {/* --- Loading Indicator --- */}
-      {isLoading && (
+      {isLoading && searchResults.length === 0 && (
         <View style={styles.centeredMessageContainer}>
           <ActivityIndicator size="large" color={THEME.ACCENT_COLOR} />
           <Text style={styles.messageText}>
@@ -539,25 +689,27 @@ const SearchScreen = () => {
         </View>
       )}
 
+      {/* --- Search Results List --- */}
+      {searchResults.length > 0 && (
+        <View style={styles.resultsContainer}>
+          <FlatList
+            data={searchResults}
+            renderItem={renderResultItem}
+            keyExtractor={(item) => item.type + '-' + item.id}
+            contentContainerStyle={styles.resultsListContainer}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          />
+        </View>
+      )}
+
       {/* --- No Results Message --- */}
-      {!isLoading && showNoResults && searchResults.length === 0 && hasSearchedOnce && ( // Ensure hasSearchedOnce is true
+      {!isLoading && searchResults.length === 0 && hasSearchedOnce && (
         <FadeInView delay={100} style={styles.centeredMessageContainer}>
           <MaterialCommunityIcons name="magnify-scan" size={60} color={THEME.TEXT_TERTIARY} style={styles.messageIcon}/>
           <Text style={styles.messageTitle}>No Results</Text>
           <Text style={styles.messageText}>Couldn't find anything for "{displayedQueryForNoResults}". Try a different search?</Text>
         </FadeInView>
-      )}
-
-      {/* --- Search Results List --- */}
-      {!isLoading && searchResults.length > 0 && ( // Removed !showNoResults as searchResults.length > 0 implies this
-        <FlatList
-          data={searchResults}
-          renderItem={renderResultItem}
-          keyExtractor={(item) => item.type + '-' + item.id + '-' + Math.random().toString()} // Added more randomness for safety
-          contentContainerStyle={[styles.resultsListContainer, (activeTab === 'places' && selectedStartPoint && selectedDestinationPoint) && { paddingBottom: 80 }]}
-          keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}
-        />
       )}
 
       {/* --- Initial "Empty State" Message --- */}
@@ -793,6 +945,9 @@ const styles = StyleSheet.create({
         fontSize: 16, // Adjusted
         fontWeight: 'bold',
         marginLeft: 8, // Adjusted
+      },
+      resultsContainer: {
+        flex: 1, // Ensure it takes full height
       },
     });
 

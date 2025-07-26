@@ -10,9 +10,9 @@ import {
   Platform,
   ActivityIndicator,
 } from 'react-native';
+import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
-import { authApiService } from '../src/services/api';
 
 const SignInScreen = () => {
   const [email, setEmail] = useState('');
@@ -29,13 +29,17 @@ const SignInScreen = () => {
     setLoading(true);
 
     try {
-      const response = await authApiService.login(email, password);
-      const token = response.token;
+      const response = await axios.post('http://192.168.0.105:8080/api/auth/login', {
+        username: email, // Adjust if your backend uses `email` instead
+        password: password,
+      });
 
-      if (token) {
+      const token = response.data.token;
+
+      if (response.status === 200 && token) {
         await AsyncStorage.setItem('authToken', token);
         Alert.alert('Success', 'Logged in successfully!');
-        router.replace('/home');
+        router.replace('/home'); // Ensure the route exists
       } else {
         Alert.alert('Login Failed', 'Unexpected response from server.');
       }
