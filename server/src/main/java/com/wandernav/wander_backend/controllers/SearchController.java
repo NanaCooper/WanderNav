@@ -1,34 +1,64 @@
 package com.wandernav.wander_backend.controllers;
 
+import com.wandernav.wander_backend.models.Location;
+import com.wandernav.wander_backend.repositories.LocationRepository;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 
 import java.util.*;
+import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api")
 @Tag(name = "Search", description = "Search functionality for places, users, and hazards")
 public class SearchController {
 
+    @Autowired
+    private LocationRepository locationRepository;
+
     @Operation(summary = "Search for places, users, or hazards")
     @PostMapping("/search")
     public ResponseEntity<?> search(@RequestBody SearchRequest request) {
         try {
-            // Mock search results - replace with actual search logic
             List<SearchResult> results = new ArrayList<>();
             
             switch (request.getType()) {
                 case "places":
-                    results.add(new SearchResult("1", "Central Park", "Popular park in NYC", 40.7829, -73.9654));
-                    results.add(new SearchResult("2", "Times Square", "Famous intersection", 40.7580, -73.9855));
+                    // Search through real locations in database
+                    List<Location> locations = locationRepository.findAll();
+                    String query = request.getQuery().toLowerCase();
+                    
+                    // Filter locations based on query
+                    List<Location> matchingLocations = locations.stream()
+                        .filter(location -> 
+                            location.getName().toLowerCase().contains(query) ||
+                            (location.getDescription() != null && location.getDescription().toLowerCase().contains(query))
+                        )
+                        .collect(Collectors.toList());
+                    
+                    // Convert to SearchResult format
+                    for (Location location : matchingLocations) {
+                        results.add(new SearchResult(
+                            location.getId(),
+                            location.getName(),
+                            location.getDescription(),
+                            location.getLatitude(),
+                            location.getLongitude()
+                        ));
+                    }
                     break;
+                    
                 case "users":
+                    // Mock user search for now
                     results.add(new SearchResult("1", "john_doe", "User", null, null));
                     results.add(new SearchResult("2", "jane_smith", "User", null, null));
                     break;
+                    
                 case "hazards":
+                    // Mock hazard search for now
                     results.add(new SearchResult("1", "Construction Zone", "Road construction ahead", 40.7829, -73.9654));
                     results.add(new SearchResult("2", "Traffic Jam", "Heavy traffic on route", 40.7580, -73.9855));
                     break;
